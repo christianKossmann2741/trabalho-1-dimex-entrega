@@ -27,3 +27,21 @@ func TestBefore(t *testing.T) {
 		})
 	}
 }
+
+func TestFormatReqEntry(t *testing.T) {
+	got := formatReqEntry(0, 7)
+	esperado := "reqEntry:0:7"
+
+	if got != esperado {
+		t.Errorf("formatReqEntry(0, 7) = %q, esperado %q", got, esperado)
+	}
+}
+
+func TestFormatRespOK(t *testing.T) {
+	got := formatRespOK(2)
+	esperado := "respOK:2"
+
+	if got != esperado {
+		t.Errorf("formatRespOK(2) = %q, esperado %q", got, esperado)
+	}
+}

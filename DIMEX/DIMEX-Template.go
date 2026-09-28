@@ -190,6 +190,14 @@ func (module *DIMEX_Module) handleUponDeliverReqEntry(msgOutro PP2PLink.PP2PLink
 // ------- funcoes de ajuda
 // ------------------------------------------------------------------------------------
 
+func formatReqEntry(id, timestamp int) string {
+	return fmt.Sprintf("reqEntry:%d:%d", id, timestamp)
+}
+
+func formatRespOK(id int) string {
+	return fmt.Sprintf("respOK:%d", id)
+}
+
 func (module *DIMEX_Module) sendToLink(address string, content string, space string) {
 	module.outDbg(space + " ---->>>>   to: " + address + "     msg: " + content)
 	module.Pp2plink.Req <- PP2PLink.PP2PLink_Req_Message{

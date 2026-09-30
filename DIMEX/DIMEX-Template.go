@@ -59,6 +59,13 @@ type DIMEX_Module struct {
 	nbrResps  int
 	dbg       bool
 
+	SnapshotReq chan int            // canal para a aplicacao pedir o inicio de um snapshot
+	SnapshotInd chan SnapshotRecord // canal onde o modulo entrega os snapshots completos
+
+	snapshots     map[int]*activeSnapshot // snapshots em andamento, por id
+	snapshotsDone map[int]bool            // ids ja concluidos, para nao reabrir
+	fault         FaultMode               // modo de falha desta execucao
+
 	Pp2plink *PP2PLink.PP2PLink // acesso aa comunicacao enviar por PP2PLinq.Req  e receber por PP2PLinq.Ind
 }
 
@@ -67,6 +74,11 @@ type DIMEX_Module struct {
 // ------------------------------------------------------------------------------------
 
 func NewDIMEX(_addresses []string, _id int, _dbg bool) *DIMEX_Module {
+	return NewDIMEXWithFault(_addresses, _id, _dbg, FaultNone)
+}
+
+// NewDIMEXWithFault cria o modulo escolhendo o modo de falha. NewDIMEX usa FaultNone.
+func NewDIMEXWithFault(_addresses []string, _id int, _dbg bool, _fault FaultMode) *DIMEX_Module {
 
 	p2p := PP2PLink.NewPP2PLink(_addresses[_id], _dbg)
 
@@ -81,6 +93,13 @@ func NewDIMEX(_addresses []string, _id int, _dbg bool) *DIMEX_Module {
 		lcl:       0,
 		reqTs:     0,
 		dbg:       _dbg,
+
+		SnapshotReq: make(chan int, 16),
+		SnapshotInd: make(chan SnapshotRecord, 64),
+
+		snapshots:     make(map[int]*activeSnapshot),
+		snapshotsDone: make(map[int]bool),
+		fault:         _fault,
 
 		Pp2plink: p2p}
 
@@ -111,16 +130,28 @@ func (module *DIMEX_Module) Start() {
 					module.handleUponReqExit() // ENTRADA DO ALGORITMO
 				}
 
+			case snapshotID := <-module.SnapshotReq: // vindo da aplicação
+				module.outDbg("app pede snapshot")
+				module.handleUponSnapshotReq(snapshotID) // ENTRADA DO ALGORITMO
+
 			case msgOutro := <-module.Pp2plink.Ind: // vindo de outro processo
-				//fmt.Printf("dimex recebe da rede: ", msgOutro)
-				if strings.Contains(msgOutro.Message, "respOK") {
+				// o tipo da mensagem e decidido pelo prefixo exato, nao por
+				// substring: "reqEntry:0:7" contem a palavra "entry" em varios
+				// lugares e um Contains solto aceitaria lixo.
+				switch messageKind(msgOutro.Message) {
+				case "marker":
+					module.outDbg("          <<<---- marcador " + msgOutro.Message)
+					module.handleUponDeliverMarker(msgOutro.Message) // ENTRADA DO ALGORITMO
+
+				case "respOK":
 					module.outDbg("         <<<---- responde! " + msgOutro.Message)
+					module.recordInTransit(msgOutro.Message)
 					module.handleUponDeliverRespOk(msgOutro) // ENTRADA DO ALGORITMO
 
-				} else if strings.Contains(msgOutro.Message, "reqEntry") {
+				case "reqEntry":
 					module.outDbg("          <<<---- pede??  " + msgOutro.Message)
+					module.recordInTransit(msgOutro.Message)
 					module.handleUponDeliverReqEntry(msgOutro) // ENTRADA DO ALGORITMO
-
 				}
 			}
 		}
@@ -256,10 +287,19 @@ func (module *DIMEX_Module) handleUponDeliverReqEntry(msgOutro PP2PLink.PP2PLink
 		module.waiting[idRemoto] = true
 
 	} else { // wantMX: o pedido com menor (ts, id) tem prioridade
-		if before(idRemoto, timestampRemoto, module.id, module.reqTs) {
+		switch module.fault {
+		case FaultMutex: // falha: responde sempre, mesmo devendo adiar
 			module.sendToLink(module.addresses[idRemoto], formatRespOK(module.id), "")
-		} else {
+
+		case FaultDeadlock: // falha: adia sempre, mesmo sem prioridade
 			module.waiting[idRemoto] = true
+
+		default:
+			if before(idRemoto, timestampRemoto, module.id, module.reqTs) {
+				module.sendToLink(module.addresses[idRemoto], formatRespOK(module.id), "")
+			} else {
+				module.waiting[idRemoto] = true
+			}
 		}
 	}
 }

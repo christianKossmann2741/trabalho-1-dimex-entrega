@@ -22,6 +22,7 @@ package DIMEX
 import (
 	PP2PLink "SD/PP2PLink"
 	"fmt"
+	"strconv"
 	"strings"
 )
 
@@ -142,6 +143,26 @@ func (module *DIMEX_Module) handleUponReqEntry() {
 							trigger [ pl , Send | [ reqEntry, r, myTs ]
 		    			estado := queroSC
 	*/
+
+	module.lcl++
+	module.reqTs = module.lcl
+	module.nbrResps = 0
+	module.st = wantMX
+
+	msg := formatReqEntry(module.id, module.reqTs)
+
+	for i, addr := range module.addresses {
+		if i == module.id {
+			continue
+		}
+		module.sendToLink(addr, msg, "")
+	}
+
+	// sozinho no sistema, nao ha resposta para esperar
+	if len(module.addresses) == 1 {
+		module.st = inMX
+		module.Ind <- dmxResp{}
+	}
 }
 
 func (module *DIMEX_Module) handleUponReqExit() {
@@ -152,6 +173,17 @@ func (module *DIMEX_Module) handleUponReqExit() {
 		    				estado := naoQueroSC
 							waiting := {}
 	*/
+
+	for idRemoto, esperando := range module.waiting {
+		if !esperando || idRemoto == module.id {
+			continue
+		}
+		module.sendToLink(module.addresses[idRemoto], formatRespOK(module.id), "")
+		module.waiting[idRemoto] = false
+	}
+
+	module.st = noMX
+	module.nbrResps = 0
 }
 
 // ------------------------------------------------------------------------------------
@@ -169,6 +201,22 @@ func (module *DIMEX_Module) handleUponDeliverRespOk(msgOutro PP2PLink.PP2PLink_I
 		  					    estado := estouNaSC
 
 	*/
+
+	_, err := parseRespOK(msgOutro.Message)
+	if err != nil {
+		return
+	}
+
+	// resposta atrasada, de um pedido que ja terminou
+	if module.st != wantMX {
+		return
+	}
+
+	module.nbrResps++
+	if module.nbrResps == len(module.addresses)-1 {
+		module.st = inMX
+		module.Ind <- dmxResp{}
+	}
 }
 
 func (module *DIMEX_Module) handleUponDeliverReqEntry(msgOutro PP2PLink.PP2PLink_Ind_Message) {
@@ -184,11 +232,88 @@ func (module *DIMEX_Module) handleUponDeliverReqEntry(msgOutro PP2PLink.PP2PLink
 		        				então  postergados := postergados + [p, r ]
 		     					lts.ts := max(lts.ts, rts.ts)
 	*/
+
+	idRemoto, timestampRemoto, err := parseReqEntry(msgOutro.Message)
+	if err != nil {
+		return
+	}
+
+	// id invalido ou pedido do proprio processo: ignora
+	if idRemoto < 0 || idRemoto >= len(module.addresses) || idRemoto == module.id {
+		return
+	}
+
+	// lcl := max(lcl, rts) + 1
+	if timestampRemoto > module.lcl {
+		module.lcl = timestampRemoto
+	}
+	module.lcl++
+
+	if module.st == noMX {
+		module.sendToLink(module.addresses[idRemoto], formatRespOK(module.id), "")
+
+	} else if module.st == inMX {
+		module.waiting[idRemoto] = true
+
+	} else { // wantMX: o pedido com menor (ts, id) tem prioridade
+		if before(idRemoto, timestampRemoto, module.id, module.reqTs) {
+			module.sendToLink(module.addresses[idRemoto], formatRespOK(module.id), "")
+		} else {
+			module.waiting[idRemoto] = true
+		}
+	}
 }
 
 // ------------------------------------------------------------------------------------
 // ------- funcoes de ajuda
 // ------------------------------------------------------------------------------------
+
+func formatReqEntry(id, timestamp int) string {
+	return fmt.Sprintf("reqEntry:%d:%d", id, timestamp)
+}
+
+func formatRespOK(id int) string {
+	return fmt.Sprintf("respOK:%d", id)
+}
+
+func parseReqEntry(message string) (id int, timestamp int, err error) {
+	partes := strings.Split(message, ":")
+	if len(partes) != 3 {
+		return 0, 0, fmt.Errorf("mensagem reqEntry com formato invalido: %q", message)
+	}
+	if partes[0] != "reqEntry" {
+		return 0, 0, fmt.Errorf("tipo de mensagem inesperado, esperava reqEntry: %q", message)
+	}
+
+	id, err = strconv.Atoi(partes[1])
+	if err != nil {
+		return 0, 0, err
+	}
+
+	timestamp, err = strconv.Atoi(partes[2])
+	if err != nil {
+		return 0, 0, err
+	}
+
+	return id, timestamp, nil
+}
+
+func parseRespOK(message string) (id int, err error) {
+	partes := strings.Split(message, ":")
+	if len(partes) != 2 {
+		return 0, fmt.Errorf("mensagem respOK com formato invalido: %q", message)
+	}
+	if partes[0] != "respOK" {
+		return 0, fmt.Errorf("tipo de mensagem inesperado, esperava respOK: %q", message)
+	}
+
+	id, err = strconv.Atoi(partes[1])
+	if err != nil {
+		return 0, err
+	}
+
+	return id, nil
+}
 
 func (module *DIMEX_Module) sendToLink(address string, content string, space string) {
 	module.outDbg(space + " ---->>>>   to: " + address + "     msg: " + content)

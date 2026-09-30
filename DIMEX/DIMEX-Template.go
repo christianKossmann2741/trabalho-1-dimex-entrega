@@ -173,6 +173,17 @@ func (module *DIMEX_Module) handleUponReqExit() {
 		    				estado := naoQueroSC
 							waiting := {}
 	*/
+
+	for idRemoto, esperando := range module.waiting {
+		if !esperando || idRemoto == module.id {
+			continue
+		}
+		module.sendToLink(module.addresses[idRemoto], formatRespOK(module.id), "")
+		module.waiting[idRemoto] = false
+	}
+
+	module.st = noMX
+	module.nbrResps = 0
 }
 
 // ------------------------------------------------------------------------------------
@@ -221,6 +232,36 @@ func (module *DIMEX_Module) handleUponDeliverReqEntry(msgOutro PP2PLink.PP2PLink
 		        				então  postergados := postergados + [p, r ]
 		     					lts.ts := max(lts.ts, rts.ts)
 	*/
+
+	idRemoto, timestampRemoto, err := parseReqEntry(msgOutro.Message)
+	if err != nil {
+		return
+	}
+
+	// id invalido ou pedido do proprio processo: ignora
+	if idRemoto < 0 || idRemoto >= len(module.addresses) || idRemoto == module.id {
+		return
+	}
+
+	// lcl := max(lcl, rts) + 1
+	if timestampRemoto > module.lcl {
+		module.lcl = timestampRemoto
+	}
+	module.lcl++
+
+	if module.st == noMX {
+		module.sendToLink(module.addresses[idRemoto], formatRespOK(module.id), "")
+
+	} else if module.st == inMX {
+		module.waiting[idRemoto] = true
+
+	} else { // wantMX: o pedido com menor (ts, id) tem prioridade
+		if before(idRemoto, timestampRemoto, module.id, module.reqTs) {
+			module.sendToLink(module.addresses[idRemoto], formatRespOK(module.id), "")
+		} else {
+			module.waiting[idRemoto] = true
+		}
+	}
 }
 
 // ------------------------------------------------------------------------------------
